@@ -1,5 +1,5 @@
 /******************************************************************************
-    Copyright (C) 2017 by Hugh Bailey <jim@obsproject.com>
+    Copyright (C) 2023 by Lain Bailey <lain@obsproject.com>
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -52,6 +52,7 @@ static const char *get_script_path_func = "\
 function script_path()\n\
 	 return \"%s\"\n\
 end\n\
+package.cpath = package.cpath .. \";\" .. script_path() .. \"/?." SO_EXT "\"\n\
 package.path = package.path .. \";\" .. script_path() .. \"/?.lua\"\n";
 
 static char *startup_script = NULL;
@@ -129,7 +130,8 @@ static bool load_lua_script(struct obs_lua_script *data)
 		goto fail;
 	}
 
-	if (luaL_loadbuffer(script, file_data, strlen(file_data), NULL) != 0) {
+	if (luaL_loadbuffer(script, file_data, strlen(file_data),
+			    data->base.path.array) != 0) {
 		script_warn(&data->base, "Error loading file: %s",
 			    lua_tostring(script, -1));
 		bfree(file_data);
@@ -150,22 +152,6 @@ static bool load_lua_script(struct obs_lua_script *data)
 		if (!success) {
 			goto fail;
 		}
-	}
-
-	lua_getglobal(script, "script_tick");
-	if (lua_isfunction(script, -1)) {
-		pthread_mutex_lock(&tick_mutex);
-
-		struct obs_lua_script *next = first_tick_script;
-		data->next_tick = next;
-		data->p_prev_next_tick = &first_tick_script;
-		if (next)
-			next->p_prev_next_tick = &data->next_tick;
-		first_tick_script = data;
-
-		data->tick = luaL_ref(script, LUA_REGISTRYINDEX);
-
-		pthread_mutex_unlock(&tick_mutex);
 	}
 
 	lua_getglobal(script, "script_properties");
@@ -222,6 +208,23 @@ static bool load_lua_script(struct obs_lua_script *data)
 	}
 
 	data->script = script;
+
+	lua_getglobal(script, "script_tick");
+	if (lua_isfunction(script, -1)) {
+		pthread_mutex_lock(&tick_mutex);
+
+		struct obs_lua_script *next = first_tick_script;
+		data->next_tick = next;
+		data->p_prev_next_tick = &first_tick_script;
+		if (next)
+			next->p_prev_next_tick = &data->next_tick;
+		first_tick_script = data;
+
+		data->tick = luaL_ref(script, LUA_REGISTRYINDEX);
+
+		pthread_mutex_unlock(&tick_mutex);
+	}
+
 	success = true;
 
 fail:
@@ -1227,9 +1230,12 @@ void obs_lua_script_unload(obs_script_t *s)
 	/* call script_unload           */
 
 	pthread_mutex_lock(&data->mutex);
+	current_lua_script = data;
 
 	lua_getglobal(script, "script_unload");
 	lua_pcall(script, 0, 0, 0);
+
+	current_lua_script = NULL;
 
 	/* ---------------------------- */
 	/* remove all callbacks         */
